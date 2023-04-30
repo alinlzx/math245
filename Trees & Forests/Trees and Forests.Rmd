@@ -1,0 +1,205 @@
+---
+title: "CART & RF"
+author: "Alex Lin"
+date: "2023-03-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Loading Libs
+
+```{r}
+
+library(caret)
+library(dplyr)
+library(fastDummies)
+
+library(rpart)
+library(rattle)
+
+library(ROCR)
+
+```
+
+# Importing & Processing Data
+
+```{r}
+library(readr)
+all.bank.data <- read_csv("all.bank.data.csv") %>% na.omit %>%
+  select(-c("Reporting.Period", "...1", "ID.RSSD", "Financial.Institution.Name")) #getting rid of columns that aren't informative to the ML models
+```
+Coding categorical variables as dichotomous:
+```{r}
+all.bank.data$OTSREGNM <- as.factor(all.bank.data$OTSREGNM)
+all.bank.data$REGAGNT <- as.factor(all.bank.data$REGAGNT)
+all.bank.data$SPECGRPN <- as.factor(all.bank.data$SPECGRPN)
+
+#coding categorical cols
+bank <- (dummy_cols(all.bank.data, select_columns = c("OTSREGNM", "REGAGNT", "SPECGRPN"))) %>% 
+  select(-c("OTSREGNM", "REGAGNT", "SPECGRPN"))
+
+#saving the categorical variables
+bank.categorical <- select(all.bank.data, c("OTSREGNM", "REGAGNT", "SPECGRPN"))
+
+#making sure colnames and variable level names are compatible with ml libraries:
+colnames(bank) <- make.names(colnames(bank))
+bank.categorical$SPECGRPN <- make.names(bank.categorical$SPECGRPN)
+
+head(bank)
+```
+
+
+# Fitting a Regression Tree:
+
+```{r}
+
+# bank <- bank %>% select(c(10:20, "UBPRD486"))
+
+fit.rpart <- train(UBPRD486 ~., method = "rpart1SE",
+                   trControl = trainControl(method = "cv",
+                                            number = 5,
+                                            savePredictions = T),
+                   data = bank)
+
+fit.rpart
+
+```
+
+```{r}
+# fit.rpart$variable.importance
+rpart.pred <- fit.rpart$pred
+```
+
+The tree itself:
+```{r}
+fancyRpartPlot(fit.rpart$finalModel)
+```
+Correlation between predicted and observations:
+```{r}
+plot(rpart.pred$obs ~ rpart.pred$pred,
+ylab="y: Tier One Capitalization", xlab=expression(paste("CART CV-prediction ", hat(y)[cart])))
+abline(0,1, col="red", lty=2)
+cor(rpart.pred$obs, rpart.pred$pred)
+```
+Evaluating Variable Importance
+```{r}
+
+plot(varImp(fit.rpart), top = 10)
+
+```
+
+
+# Fitting a Random Forest
+```{r}
+
+mtry <- seq(15, 25, by = 3)
+
+
+fit.rf <- train(UBPRD486 ~., method = "rf",
+                   trControl = trainControl(method = "cv",
+                                            number = 5,
+                                            savePredictions = T),
+                   tuneGrid = expand.grid(mtry = mtry),
+                   data = bank)
+
+fit.rf
+
+```
+
+```{r}
+# fit.rpart$variable.importance
+rf.pred <- fit.rf$pred[fit.rf$pred$mtry==15,]
+```
+
+Correlation between predicted and observations:
+```{r}
+plot(rf.pred$obs ~ rf.pred$pred,
+ylab="y: Tier One Capitalization", xlab=expression(paste("CART CV-prediction ", hat(y)[rf])))
+abline(0,1, col="red", lty=2)
+cor(rf.pred$obs, rf.pred$pred)
+```
+
+# Fitting a Classification Tree or RF on SPECGRPN and REGAGNT
+```{r}
+
+ml.for.cat <- function (response, method) {
+  
+  bank.2 <- select(bank, -grep(response, colnames(bank))) %>%
+    cbind(select(bank.categorical, response))
+  
+  print(head(bank.2))
+    
+ 
+  if (method == "rf") {
+    
+    mtry <- seq(15, 25, by = 3)
+    
+    fit.cat <- train(as.formula(paste(response, "~.")), method = method,
+                   trControl = trainControl(method = "cv",
+                                            number = 5,
+                                            savePredictions = T,
+                                            classProbs = T),
+                   tuneGrid = expand.grid(mtry = mtry),
+                   data = bank.2)
+  
+  }
+  
+  else if (method == "rpart1SE") {
+    
+        fit.cat <- train(as.formula(paste(response, "~.")), method = method,
+                   trControl = trainControl(method = "cv",
+                                            number = 5,
+                                            savePredictions = T,
+                                            classProbs = T),
+                   data = bank.2)
+    
+  }
+  
+  return(fit.cat)
+  
+}
+
+
+```
+
+Applying the function:
+```{r}
+# bank.categorical$SPECGRPN <- ifelse(bank.categorical$SPECGRPN == "Agricultural.Specialization" | bank.categorical$SPECGRPN == # "Commercial.Lending.Specialization",
+                                    # bank.categorical$SPECGRPN, "Other")
+
+fit.regulator <- ml.for.cat(response = "REGAGNT", method = "rpart1SE")
+```
+
+```{r}
+regulator.pred <- fit.regulator$pred
+head(regulator.pred)
+```
+
+function for calculating TPR and FPR for each class, and then creating an ROC:
+```{r}
+
+make.roc <- function (class) {
+  
+  pred.class <- prediction(select(spec.pred, class), 
+                           ifelse(spec.pred$obs == class, class, "other"))
+  perf.class <- performance(pred.class, "tpr", "fpr")
+  plot(perf.class)
+
+}
+
+
+```
+
+applying the function to create a multi-class ROC:
+```{r}
+sapply(colnames(spec.pred[,c(3:5)]), make.roc) 
+# make.roc("Agricultural.Specialization")
+```
+
+```{r}
+table(regulator.pred$pred, regulator.pred$obs)
+```
+
