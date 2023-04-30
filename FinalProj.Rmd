@@ -1,0 +1,228 @@
+---
+title: "FinalProject"
+author: "Rich Pihlstrom"
+date: "2023-04-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(boot)
+library(caret)
+library(car)
+library(ROCR)
+```
+
+# Linear Regression
+
+## Upload Data
+```{r}
+df <- read.delim("bank.data.cleaned.csv", sep = ",")
+df <- df[,!names(df) %in% c("OTSREGNM_","SPECGRPN_")]
+```
+
+## Create Levels For Categorical Variables
+
+### Replacement Function
+
+The function below takes the input vectors of column names and category names with binary encoding and returns a single vector of category values.
+```{r}
+level <- function(NAME, colNames, catNames){
+  
+  colList <- c()
+  removeList <- c()
+  
+  for(i in seq(1,nrow(df))){
+    j <- 1
+    for(name in colNames){
+      if(df[i,name] == 1){
+        colList <- append(colList, catNames[j])
+        break
+      }
+      if(j == length(colNames)){
+        removeList <- append(removeList, i)
+      }
+      j <- j+1
+    }
+  }
+  
+  if(length(removeList)>0){
+    df <- df[-removeList,]
+  }
+  df <- df[,!names(df) %in% colNames]
+  df[NAME] <- colList
+  
+  return(df)
+  
+}
+```
+
+### Running Function
+
+The following sets of columns correlate to the binary one-hot encoding of a categorical variable from the original dataset:
+
+* OTSREGNM:
+  * OTSREGNM_Central
+  * OTSREGNM_Northeast
+  * OTSREGNM_Southeast
+  * OTSREGNM_West
+  * OTSREGNM_Western
+* REGAGNT
+  * REGAGNT_FDIC
+  * REGAGNT_FED
+  * REGAGNT_OCC
+* SPECGRPN
+  * SPECGRPN_Agricultural.Specialization
+  * SPECGRPN_All.Other.Over.1.Billion
+  * SPECGRPN_All.Other.Under.1.Billion
+  * SPECGRPN_Commercial.Lending.Specialization
+  * SPECGRPN_Consumer.Lending.Specialization
+  * SPECGRPN_Credit.card.Specialization
+  * SPECGRPN_International.Specialization
+  * SPECGRPN_Mortgage.Lending.Specialization
+  * SPECGRPN_Other.Specialized.Under.1.Billion
+
+```{r}
+colnames(df)
+```
+
+#### OTSREGNM
+```{r}
+OTSREGNM_names <- colnames(df)[22:26]
+OTSREGNM_cats <- c("central","northeast","southeast","west","western")
+df <- level("OTSREGNM", OTSREGNM_names, OTSREGNM_cats)
+```
+
+#### REGAGNT
+```{r}
+REGAGNT_names <- colnames(df)[22:24]
+REGAGNT_cats <- c("FDIC","FED","OCC")
+df <- level("REGAGNT", REGAGNT_names, REGAGNT_cats)
+```
+
+#### SPECGRPN
+```{r}
+colnames(df)
+SPECGRPN_names <- colnames(df)[22:30]
+SPECGRPN_cats <- c("Agricultural.Specialization","All.Other.Over.1.Billion","All.Other.Under.1.Billion",
+                   "Commercial.Lending.Specialization","Consumer.Lending.Specialization",
+                   "Credit.card.Specialization","International.Specialization",
+                   "Mortgage.Lending.Specialization","Other.Specialized.Under.1.Billion")
+df <- level("SPECGRPN", SPECGRPN_names, SPECGRPN_cats)
+```
+
+Drop Index Column:
+```{r}
+df <- df[,-1]
+```
+
+## Linear Regression
+
+### Mutate the categorical columns to be factors:
+```{r}
+df <- mutate(df, 
+                 OTSREGNM=as.factor(OTSREGNM),
+                 REGAGNT=as.factor(REGAGNT),
+                 SPECGRPN=as.factor(SPECGRPN))
+```
+
+The baseline categories will be the alphabetically-first category for each variable:
+
+* OTSREGNM: "central"
+* REGAGNT: "FDIC"
+* SPECGRPN: "Agricultural.Specialization"
+
+```{r}
+x = model.matrix(UBPRD486 ~ ., data=df)
+y = df$UBPRD486
+
+library(glmnet)
+
+#perform k-fold cross-validation to find optimal lambda value
+set.seed(1)
+cv_model <- cv.glmnet(x, y, alpha = 1, type.measure="auc")
+
+#find optimal lambda value that minimizes test MSE
+best_lambda <- cv_model$lambda.1se
+best_lambda
+
+#produce plot of test MSE by lambda value
+plot(cv_model)
+
+best_model <- glmnet(x, y, alpha = 1, lambda = best_lambda)
+coef(best_model)
+```
+
+### Using the listed coefficient with non-zero effect, we can identify the following variables as the ones selected for out model:
+
+* UBPRE014
+* UBPRE015
+* UBPRE016
+* UBPRE544
+* UBPRE600
+* SPECGRPN
+
+### With these selected variables, we can fit the data to the following regression model using a 5-fold cross validation:
+
+\begin{align*} 
+&Y_i=\beta_0+\beta_1 X_{1i}+\beta_2 X_{2i}+\beta_3 X_{3i}+\beta_4 X_{4i}+\beta_5 X_{5i}+\beta_6 X_{6i}+\beta_7 X_{7i}+\beta_8 X_{8i}+\beta_9 X_{9i}+\epsilon_i \\
+&\text{where } \epsilon_i \sim N(0,\sigma^2) \text{ iid, } X_{1i}= \text{the UBPRE014 value of the ith bank, } X_{2i}= \text{the UBPRE015 value of the ith bank, } \\
+&X_{3i}= \text{the UBPRE016 value of the ith bank, } X_{4i}= \text{the UBPRE544 value of the ith bank, } X_{5i}= \text{the UBPRE600 value of the ith bank, }\\
+&X_{6i}= \text{the binary encoding for the level Commercial.Lending.Specialization in the category SPECGRPN, } \\ 
+&X_{7i}= \text{the binary encoding for the level Consumer.Lending.Specialization in the category SPECGRPN, } 
+\\ 
+&X_{8i}= \text{the binary encoding for the level Mortgage.Lending.Specialization in the category SPECGRPN, } 
+\\
+&X_{9i}= \text{the binary encoding for the level Other.Specialized.Under.1.Billion in the category SPECGRPN, and } \\
+&Y_i= \text{the UBPRD486 of the ith bank}
+\end{align*}
+
+```{r}
+set.seed(1)
+sel.names <- c("UBPRE014","UBPRE015","UBPRE016","UBPRE544","UBPRE600","SPECGRPN")
+
+fit.lasso <- train(as.formula(paste("UBPRD486",paste(sel.names, collapse = "+"),sep=" ~ ")), method = "lm",
+                     trControl = trainControl(method="cv", number=5, savePredictions = TRUE),
+                     data=df)
+
+summary(fit.lasso$finalModel)
+```
+
+From our output above, at a confidence level of $\alpha= 0.95$ we obtain the following regression equation for our final model:
+
+$\text{UBPRD486}=19.69015 -0.065319*(X_1) -0.104940*(X_2) +0.341376*(X_3) +0.427898*(X_4)$
+
+$ + 0.052948*(X_5) -1.387659*(X_6) -1.382338*(X_7) +1.922836*(X_8) +3.573738*(X_9)$
+
+### We can then examine the predictive quality of our final model, both full and cross-validated:
+
+Full model:
+```{r}
+predfin.lm <- predict(fit.lasso)
+head(cbind(df$UBPRD486,predfin.lm))
+plot(df$UBPRD486 ~ predfin.lm, xlab=expression(hat(UBPRD486)), ylab = "UBPRD486")
+cor(df$UBPRD486, predfin.lm)
+```
+
+Cross-validated:
+```{r}
+pred.lm <- fit.lasso$pred
+head(cbind(df$UBPRD486[pred.lm$rowIndex],pred.lm$pred))
+plot(df$UBPRD486[pred.lm$rowIndex] ~ pred.lm$pred, xlab=expression(hat(UBPRD486.CV)), ylab = "UBPRD486")
+cor(df$UBPRD486[pred.lm$rowIndex], pred.lm$pred)
+```
+
+In both cases, our correlation is not very strong — $<0.5$.
+
+### We can now check to see if our final model has any multicollinearity problems:
+```{r}
+vif(fit.lasso$finalModel)
+```
+
+We see that no values surpass the VIF threshold so there is no multicollinearity issue.
+
+
