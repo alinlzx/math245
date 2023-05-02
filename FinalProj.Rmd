@@ -21,7 +21,7 @@ library(ROCR)
 
 ## Upload Data
 ```{r}
-df <- read.delim("bank.data.cleaned.csv", sep = ",")
+df <- read.delim("bank.data.1.csv", sep = ",")
 df <- df[,!names(df) %in% c("OTSREGNM_","SPECGRPN_")]
 ```
 
@@ -92,14 +92,14 @@ colnames(df)
 
 #### OTSREGNM
 ```{r}
-OTSREGNM_names <- colnames(df)[22:26]
+OTSREGNM_names <- colnames(df)[30:34]
 OTSREGNM_cats <- c("central","northeast","southeast","west","western")
 df <- level("OTSREGNM", OTSREGNM_names, OTSREGNM_cats)
 ```
 
 #### REGAGNT
 ```{r}
-REGAGNT_names <- colnames(df)[22:24]
+REGAGNT_names <- colnames(df)[30:32]
 REGAGNT_cats <- c("FDIC","FED","OCC")
 df <- level("REGAGNT", REGAGNT_names, REGAGNT_cats)
 ```
@@ -107,7 +107,7 @@ df <- level("REGAGNT", REGAGNT_names, REGAGNT_cats)
 #### SPECGRPN
 ```{r}
 colnames(df)
-SPECGRPN_names <- colnames(df)[22:30]
+SPECGRPN_names <- colnames(df)[30:38]
 SPECGRPN_cats <- c("Agricultural.Specialization","All.Other.Over.1.Billion","All.Other.Under.1.Billion",
                    "Commercial.Lending.Specialization","Consumer.Lending.Specialization",
                    "Credit.card.Specialization","International.Specialization",
@@ -136,21 +136,19 @@ The baseline categories will be the alphabetically-first category for each varia
 * REGAGNT: "FDIC"
 * SPECGRPN: "Agricultural.Specialization"
 
+### Fit the model and determine the optimal lambda value to use to get best model.
 ```{r}
 x = model.matrix(UBPRD486 ~ ., data=df)
 y = df$UBPRD486
 
 library(glmnet)
 
-#perform k-fold cross-validation to find optimal lambda value
 set.seed(1)
 cv_model <- cv.glmnet(x, y, alpha = 1, type.measure="auc")
 
-#find optimal lambda value that minimizes test MSE
 best_lambda <- cv_model$lambda.1se
 best_lambda
 
-#produce plot of test MSE by lambda value
 plot(cv_model)
 
 best_model <- glmnet(x, y, alpha = 1, lambda = best_lambda)
@@ -159,31 +157,20 @@ coef(best_model)
 
 ### Using the listed coefficient with non-zero effect, we can identify the following variables as the ones selected for out model:
 
+* UBPRE575
+* UBPRE589
+* UBPRM026
 * UBPRE014
 * UBPRE015
-* UBPRE016
 * UBPRE544
 * UBPRE600
 * SPECGRPN
 
 ### With these selected variables, we can fit the data to the following regression model using a 5-fold cross validation:
 
-\begin{align*} 
-&Y_i=\beta_0+\beta_1 X_{1i}+\beta_2 X_{2i}+\beta_3 X_{3i}+\beta_4 X_{4i}+\beta_5 X_{5i}+\beta_6 X_{6i}+\beta_7 X_{7i}+\beta_8 X_{8i}+\beta_9 X_{9i}+\epsilon_i \\
-&\text{where } \epsilon_i \sim N(0,\sigma^2) \text{ iid, } X_{1i}= \text{the UBPRE014 value of the ith bank, } X_{2i}= \text{the UBPRE015 value of the ith bank, } \\
-&X_{3i}= \text{the UBPRE016 value of the ith bank, } X_{4i}= \text{the UBPRE544 value of the ith bank, } X_{5i}= \text{the UBPRE600 value of the ith bank, }\\
-&X_{6i}= \text{the binary encoding for the level Commercial.Lending.Specialization in the category SPECGRPN, } \\ 
-&X_{7i}= \text{the binary encoding for the level Consumer.Lending.Specialization in the category SPECGRPN, } 
-\\ 
-&X_{8i}= \text{the binary encoding for the level Mortgage.Lending.Specialization in the category SPECGRPN, } 
-\\
-&X_{9i}= \text{the binary encoding for the level Other.Specialized.Under.1.Billion in the category SPECGRPN, and } \\
-&Y_i= \text{the UBPRD486 of the ith bank}
-\end{align*}
-
 ```{r}
 set.seed(1)
-sel.names <- c("UBPRE014","UBPRE015","UBPRE016","UBPRE544","UBPRE600","SPECGRPN")
+sel.names <- c("UBPRE575","UBPRE589","UBPRM026","UBPRE014","UBPRE015","UBPRE544","UBPRE600","SPECGRPN")
 
 fit.lasso <- train(as.formula(paste("UBPRD486",paste(sel.names, collapse = "+"),sep=" ~ ")), method = "lm",
                      trControl = trainControl(method="cv", number=5, savePredictions = TRUE),
@@ -192,11 +179,15 @@ fit.lasso <- train(as.formula(paste("UBPRD486",paste(sel.names, collapse = "+"),
 summary(fit.lasso$finalModel)
 ```
 
-From our output above, at a confidence level of $\alpha= 0.95$ we obtain the following regression equation for our final model:
+From our output above, at a confidence level of $\alpha= 0.9$ we obtain the following regression equation for our final model:
 
-$\text{UBPRD486}=19.69015 -0.065319*(X_1) -0.104940*(X_2) +0.341376*(X_3) +0.427898*(X_4)$
-
-$ + 0.052948*(X_5) -1.387659*(X_6) -1.382338*(X_7) +1.922836*(X_8) +3.573738*(X_9)$
+\begin{align*} 
+&\text{UBPRD486}=15.371595 +0.078242*(UBPRE589) -0.025207*(UBPRM026) -0.045603*(UBPRE014)\\
+&-0.060019*(UBPRE015)+ 0.436990*(UBPRE544) +0.062084*(UBPRE600) -0.782223*(SPECGRPN_{All.Other.Over.1.Billion})\\
+&-1.056788*(SPECGRPN_{Commercial.Lending.Specialization})-1.381076*(SPECGRPN_{Consumer.Lending.Specialization})\\
+&-3.591104*(SPECGRPN_{International.Specialization}) +1.517069*(SPECGRPN_{Mortgage.Lending.Specialization})\\
+&+2.591061*(SPECGRPN_{Other.Specialized.Under.1.Billion }) 
+\end{align*} 
 
 ### We can then examine the predictive quality of our final model, both full and cross-validated:
 
@@ -224,5 +215,78 @@ vif(fit.lasso$finalModel)
 ```
 
 We see that no values surpass the VIF threshold so there is no multicollinearity issue.
+
+### Model Assumptions
+
+Independence:
+The banks sampled for this dataset are almost certainly not independent, as they likely have significant influence over other banks' policies, resulting in influenced data points.
+
+Linearity:
+```{r}
+par(mfrow = c(1, 2))
+plot(as.formula(paste("UBPRD486",paste(sel.names, collapse = "+"),sep=" ~ ")), data=df)
+```
+
+None of the above scatterplots indicate linearity between our covariates and our dependent variable. This lack of support seems to moreso be a result of outliers than a different relationship like logarithmic.
+
+Constant variance: 
+```{r}
+ncvTest(fit.lasso$finalModel)
+```
+We reject the null hypothesis of homoscedasticity with the BP test below, indicating that variance is non-constant.
+
+Normality: 
+```{r}
+shapiro.test(rstandard(fit.lasso$finalModel))
+```
+We reject the null hypothesis and conclude that there is evidence that the residuals depart from normality.
+
+#### Remove outliers
+
+Visualize the studentized residuals that are outside of the range of [-3,3]
+```{r}
+plot(rstandard(fit.lasso$finalModel) ~ fit.lasso$finalModel$fitted.values,
+     xlab="fitted values", ylab="Standardized residuals")
+abline(0,0, lty=2)
+abline(-3, 0, lty=2, col="red")
+abline(3, 0, lty=2, col="red")
+```
+
+Remove the points outside of those bounds:
+```{r}
+i <- 1
+indices <- c()
+for(val in rstandard(fit.lasso$finalModel)){
+  if(val > 3 || val < -3){
+    indices <- append(indices, i)
+  }
+  i <- i + 1
+}
+
+df.OL <- df[-indices,]
+
+```
+
+Refit the cross-validated model with the removed outliers:
+```{r}
+fit.lasso.outlier <- train(as.formula(paste("UBPRD486",paste(sel.names, collapse = "+"),sep=" ~ ")), 
+                           method = "lm",
+                           trControl = trainControl(method="cv", number=5, savePredictions = TRUE),
+                           data=df.OL)
+
+summary(fit.lasso$finalModel)
+```
+
+Check the predictive quality:
+```{r}
+predfin.lm <- predict(fit.lasso.outlier)
+head(cbind(df.OL$UBPRD486,predfin.lm))
+plot(df.OL$UBPRD486 ~ predfin.lm, xlab=expression(hat(UBPRD486)), ylab = "UBPRD486")
+cor(df.OL$UBPRD486, predfin.lm)
+```
+
+The scatter plot seems to be more coorelated, but the correlation is significantly worse than the previous model.
+
+
 
 
