@@ -1,0 +1,299 @@
+---
+title: "CART & RF"
+author: "Alex Lin"
+date: "2023-03-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Loading Libs
+
+```{r}
+
+library(caret)
+library(dplyr)
+library(fastDummies)
+
+library(rpart)
+library(rattle)
+
+library(ROCR)
+
+```
+
+# Importing & Processing Data
+
+```{r}
+library(readr)
+all.bank.data <- read_csv("bank.data.1.csv")[,-1] %>% na.omit # %>%
+  # select(-c("Reporting.Period", "...1", "ID.RSSD", "Financial.Institution.Name")) #getting rid of columns that aren't informative to the ML models
+```
+Coding categorical variables as dichotomous:
+```{r}
+# all.bank.data$OTSREGNM <- as.factor(all.bank.data$OTSREGNM)
+# all.bank.data$REGAGNT <- as.factor(all.bank.data$REGAGNT)
+# all.bank.data$SPECGRPN <- as.factor(all.bank.data$SPECGRPN)
+
+#coding categorical cols
+# bank <- (dummy_cols(all.bank.data, select_columns = c("OTSREGNM", "REGAGNT", "SPECGRPN"))) %>% 
+  # select(-c("OTSREGNM", "REGAGNT", "SPECGRPN"))
+
+#saving the categorical variables
+# bank.categorical <- select(all.bank.data, c("OTSREGNM", "REGAGNT", "SPECGRPN"))
+
+#making sure colnames and variable level names are compatible with ml libraries:
+# colnames(bank) <- make.names(colnames(bank))
+# bank.categorical$SPECGRPN <- make.names(bank.categorical$SPECGRPN)
+
+bank <- all.bank.data
+
+head(bank)
+```
+
+
+# Fitting a Regression Tree:
+
+```{r}
+
+set.seed(123)
+# bank <- bank %>% select(c(10:20, "UBPRD486"))
+
+fit.rpart <- train(UBPRD486 ~., method = "rpart1SE",
+                   trControl = trainControl(method = "cv",
+                                            number = 5,
+                                            savePredictions = T),
+                   data = bank)
+
+fit.rpart
+
+```
+
+```{r}
+# fit.rpart$variable.importance
+rpart.pred <- fit.rpart$pred
+```
+
+The tree itself:
+```{r}
+fancyRpartPlot(fit.rpart$finalModel)
+```
+Correlation between predicted and observations:
+```{r}
+plot(rpart.pred$obs ~ rpart.pred$pred,
+ylab="y: Tier One Capitalization", xlab=expression(paste("CART CV-prediction ", hat(y)[cart])))
+abline(0,1, col="red", lty=2)
+cor(rpart.pred$obs, rpart.pred$pred)
+```
+Evaluating Variable Importance
+```{r}
+
+plot(varImp(fit.rpart), top = 18)
+
+rpart.varimp <- varImp(fit.rpart)$importance
+
+```
+
+
+# Fitting a Random Forest
+```{r}
+
+set.seed(123)
+
+mtry <- seq(12, 21, by = 3)
+
+
+fit.rf <- train(UBPRD486 ~., method = "rf",
+                   trControl = trainControl(method = "cv",
+                                            number = 5,
+                                            savePredictions = T),
+                   tuneGrid = expand.grid(mtry = mtry),
+                   data = bank)
+
+fit.rf
+
+```
+
+```{r}
+# fit.rpart$variable.importance
+rf.pred <- fit.rf$pred[fit.rf$pred$mtry==15,]
+```
+
+Correlation between predicted and observations:
+```{r}
+plot(rf.pred$obs ~ rf.pred$pred,
+ylab="y: Tier One Capitalization", xlab=expression(paste("CART CV-prediction ", hat(y)[rf])))
+abline(0,1, col="red", lty=2)
+cor(rf.pred$obs, rf.pred$pred)
+```
+
+Variable importance:
+```{r}
+
+plot(varImp(fit.rf), top = 18)
+
+rf.varimp <- varImp(fit.rf)$importance
+
+```
+
+# Re-fitting Classification Trees or RFs on the data, but with UBPRD486 as a categorical variable
+
+recoding UBPRD486 based on the new CBLR framework, which identifies a leverage ratio of 9% as a criterion for a qualifying community banking organization:
+```{r}
+
+bank.new <- bank
+bank.new$leverage.ratio <- ifelse(bank.new$UBPRD486 > 9, "greater.than.9.perc", "less.than.9.perc")
+bank.new <- bank.new %>% select(-UBPRD486)
+
+```
+
+
+Fitting a classification tree with a stratified sample:
+```{r}
+set.seed(123)
+
+mtry <- seq(15, 25, by = 3)
+
+# cvIndex <- createFolds(factor(bank.new$leverage.ratio), 5, returnTrain = T) 
+weights <- ifelse(bank.new$leverage.ratio == "greater.than.9.perc", 0.5, 1)
+
+# resampling the dataset to artificially inflate less.than.9.perc proportion: 
+
+bank.new.high.leverage <- filter(bank.new, leverage.ratio == "greater.than.9.perc")
+bank.new.resampled <- rbind(filter(bank.new, leverage.ratio == "less.than.9.perc"),
+                            bank.new.high.leverage[sample(nrow(bank.new.high.leverage), 1000),])
+
+fit.rpart.new <- train(as.factor(leverage.ratio) ~., method = "rf",
+                       trControl = trainControl(method = "cv",
+                                            number = 5,
+                                            savePredictions = T,
+                                            classProbs = T),
+                       tuneGrid = expand.grid(mtry = mtry),
+                       data = bank.new.resampled)
+
+fit.rpart.new
+
+rpart.new.pred <- fit.rpart.new$pred
+
+```
+
+Creating an ROC curve:
+```{r}
+
+rpart.leverage.ratio <- prediction(rpart.new.pred$less.than.9.perc, rpart.new.pred$obs)
+rpart.leverage.ratio.perf <- performance(rpart.leverage.ratio, "tpr", "fpr")
+plot(rpart.leverage.ratio.perf)
+abline(b = 1, a = 0, lty = 212)
+
+```
+Calculating the AUC:
+```{r}
+
+performance(rpart.leverage.ratio, "auc")@y.values
+
+```
+
+Creating a confusion matrix:
+```{r}
+table(rpart.new.pred$obs, rpart.new.pred$pred)
+```
+
+
+# Fitting a Classification Tree or RF on SPECGRPN and REGAGNT
+```{r}
+
+ml.for.cat <- function (response, method) {
+  
+  bank.2 <- select(bank, -grep(response, colnames(bank))) %>%
+    cbind(select(bank.categorical, response))
+  
+  # print(head(bank.2))
+    
+ 
+  if (method == "rf") {
+    
+    set.seed(123)
+    
+    mtry <- seq(15, 25, by = 3)
+    
+    fit.cat <- train(as.formula(paste(response, "~.")), method = method,
+                   trControl = trainControl(method = "cv",
+                                            number = 5,
+                                            savePredictions = T,
+                                            classProbs = T),
+                   tuneGrid = expand.grid(mtry = mtry),
+                   data = bank.2)
+  
+  }
+  
+  else if (method == "rpart1SE") {
+    
+      set.seed(123)
+    
+      fit.cat <- train(as.formula(paste(response, "~.")), method = method,
+                 trControl = trainControl(method = "cv",
+                                          number = 5,
+                                          savePredictions = T,
+                                          classProbs = T),
+                 data = bank.2)
+    
+  }
+  
+  return(fit.cat)
+  
+}
+
+
+```
+
+Before applying the function, we recode the SPECGRPN variable by paring it down to three overarching categories: Agricultural Specialization, Commercial Lending Specialization, and All Others. 
+```{r}
+bank.categorical$SPECGRPN <- ifelse(bank.categorical$SPECGRPN == "Agricultural.Specialization" | bank.categorical$SPECGRPN == "Commercial.Lending.Specialization",
+                                    bank.categorical$SPECGRPN, "Other")
+```
+
+Applying the function:
+```{r}
+fit.spec <- ml.for.cat(response = "SPECGRPN", method = "rpart1SE")
+```
+
+```{r}
+spec.pred <- fit.spec$pred
+head(spec.pred)
+```
+
+function for calculating TPR and FPR for each class, and then creating an ROC:
+```{r}
+
+make.roc <- function (class) {
+  
+  pred.class <- prediction(select(spec.pred, class), 
+                           ifelse(spec.pred$obs == class, class, "no"))
+  perf.class <- performance(pred.class, "tpr", "fpr")
+  return(perf.class)
+
+}
+
+
+```
+
+applying the function to create a multi-class ROC:
+```{r}
+spec.perf <- sapply(colnames(spec.pred[,c(3:5)]), make.roc) 
+
+plot(spec.perf[[1]], col = "blue")
+
+par(new = T)
+plot(spec.perf[[2]], col = "red")
+
+par(new = T)
+plot(spec.perf[[3]], col = "green") 
+# make.roc("Agricultural.Specialization")
+```
+
+```{r}
+confusionMatrix(table(spec.pred$pred, spec.pred$obs))
+```
+
